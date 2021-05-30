@@ -24,6 +24,10 @@ public final class LoggerUtil {
     }
 
     public static String getTimestampString() {
-        return new SimpleDateFormat(DATE_FORMAT).format(new Date());
+        return getTimestampString(new Date());
+    }
+
+    public static String getTimestampString(Date d) {
+        return new SimpleDateFormat(DATE_FORMAT).format(d);
     }
 }
