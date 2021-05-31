@@ -20,8 +20,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -42,13 +46,14 @@ public class ProcessManager {
     private static final String DESTINATION_PATH = "Chia.plot";
     private static final String NO_WRITE_FILENAME = "no-write";
     private static final String TMP_PATH = "Chia.tmp";
-    private static final Duration DELAY_MOVE = Duration.ofMinutes(30);
     private static final int COPY_BUFFER_SIZE = 10 * MB;
 
     private final File configFile;
     private int memory = 4000;
     private int nThreads = 8;
     private Duration delayStartQueue = Duration.ofMinutes(60);
+    private Duration moveDelay = Duration.ofMinutes(30);
+    private final Map<String, PlotterParams> plotterParamsMap = new HashMap<>();
     private final Set<File> inUseDirectDest = new HashSet<>();
     private final Set<String> runningProcessQueues = new HashSet<>();
     private final AtomicInteger queueCount = new AtomicInteger();
@@ -59,12 +64,12 @@ public class ProcessManager {
     }
 
     @SuppressWarnings("SleepWhileInLoop")
-    public void run() throws IOException, InterruptedException {
+    public void run() throws InterruptedException {
         log("ProcessManager: Using plotting log file: " + PLOTTING_LOG_FILE.getAbsolutePath());
         log("ProcessManager STARTED: Watching for stop file: " + STOP_FILE.getAbsolutePath());
-        Collection<PlotterParams> config = readConfig(configFile);
+        readConfig(configFile);
         log("ProcessManager: Available destinations: " + getAvailableDestinations());
-        config.forEach(this::createProcessQueue);
+        plotterParamsMap.forEach((name, pp) -> createProcessQueue(name));
         Thread.sleep(2000);
         while (!runningProcessQueues.isEmpty() || movingProcessesCount.get() != 0) {
             Thread.sleep(10000);
@@ -73,43 +78,50 @@ public class ProcessManager {
         log("ProcessManager FINISHED");
     }
 
-    private void createProcessQueue(PlotterParams p) {
+    private void createProcessQueue(String queueName) {
         int queueId = queueCount.getAndIncrement();
-        log(p.getName() + " ProcessManager: Creating new process queue \"" + p.getName() + "\" #" + queueId);
+        log(queueName + " ProcessManager: Creating new process queue \"" + queueName + "\" #" + queueId);
         CompletableFuture.runAsync(() -> {
             Duration delay = Duration.ofMillis(delayStartQueue.toMillis() * queueId);
             if (delay.toMillis() > 0) {
-                log(p.getName() + " ProcessManager: Delaying queue \"" + p.getName() + "\" #" + queueId + " for " + delay);
+                log(queueName + " ProcessManager: Delaying queue \"" + queueName + "\" #" + queueId + " for " + delay);
                 try {
                     Thread.sleep(delay.toMillis());
                 } catch (InterruptedException ex) {
-                    log(p.getName() + " ProcessManager: Interrupted during delay sleep queue \"" + p.getName() + "\" #" + queueId);
+                    log(queueName + " ProcessManager: Interrupted during delay sleep queue \"" + queueName + "\" #" + queueId);
                     return;
                 }
             }
             synchronized (runningProcessQueues) {
-                runningProcessQueues.add(p.getName());
+                runningProcessQueues.add(queueName);
             }
-            createProcess(p);
+            createProcess(queueName);
         });
     }
 
-    private void destroyProcessQueue(PlotterParams p) {
+    private void destroyProcessQueue(String queueName) {
         synchronized (runningProcessQueues) {
-            runningProcessQueues.remove(p.getName());
+            runningProcessQueues.remove(queueName);
         }
     }
 
     @SuppressWarnings("CallToPrintStackTrace")
-    private void createProcess(PlotterParams p) {
+    private void createProcess(String queueName) {
         if (STOP_FILE.exists()) {
-            log(p.getName() + " ProcessManager: STOP file detected. Exiting queue \"" + p.getName() + "\"");
-            destroyProcessQueue(p);
+            log(queueName + " ProcessManager: STOP file detected. Exiting queue \"" + queueName + "\"");
+            destroyProcessQueue(queueName);
             return;
         }
         if (getAvailableDestinations().isEmpty()) {
-            log(p.getName() + " ProcessManager: No destination space left. Exiting queue \"" + p.getName() + "\"");
-            destroyProcessQueue(p);
+            log(queueName + " ProcessManager: No destination space left. Exiting queue \"" + queueName + "\"");
+            destroyProcessQueue(queueName);
+            return;
+        }
+        readConfig(configFile);
+        PlotterParams p = plotterParamsMap.get(queueName);
+        if (p == null) {
+            log(queueName + " ProcessManager: Queue removed from config. Exiting queue \"" + queueName + "\"");
+            destroyProcessQueue(queueName);
             return;
         }
         log(p.getName() + " ProcessManager: Creating process: " + p.getName() + "\t" + p.getTmpDrive() + " -> " + p.tmp2Drive);
@@ -122,7 +134,7 @@ public class ProcessManager {
                     Optional<File> otmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f)).findAny();
                     if (!otmp2Path.isPresent()) {
                         log(p.getName() + " ProcessManager: No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
-                        destroyProcessQueue(p);
+                        destroyProcessQueue(queueName);
                         return;
                     }
                     tmp2Path = otmp2Path.get();
@@ -133,24 +145,25 @@ public class ProcessManager {
                 tmp2Path = new File(fixVolumePathForWindows(p.getTmp2Drive()), TMP_PATH);
             }
             log(p.getName() + " ProcessManager: Starting process \"" + p.getName() + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
-            new PlotProcess(p.getName(), tmpPath, tmp2Path, isTmp2Dest, memory, nThreads, pp -> onCompleteProcess(pp, p)).startProcess();
+            new PlotProcess(p.getName(), tmpPath, tmp2Path, isTmp2Dest, memory, nThreads, pp -> onCompleteProcess(pp, queueName)).startProcess();
         } catch (IOException ex) {
             ex.printStackTrace();
         }
     }
 
-    private void onCompleteProcess(PlotProcess pp, PlotterParams p) {
+    private void onCompleteProcess(PlotProcess pp, String queueName) {
         long runtime = System.currentTimeMillis() - pp.getCreateTimestamp();
-        log(p.getName() + " ProcessManager: Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
+        log(queueName + " ProcessManager: Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
         logPlottingStat(pp);
         if (pp.isTmp2Dest()) {
             synchronized (inUseDirectDest) {
                 inUseDirectDest.remove(pp.getTmp2Path());
             }
         } else {
-            moveFileAcync(new File(pp.getTmp2Path(), pp.getResultFileName()), p);
+            boolean delayMove = pp.getTmp2Path().equals(pp.getTmpPath());
+            moveFileAcync(new File(pp.getTmp2Path(), pp.getResultFileName()), queueName, delayMove);
         }
-        createProcess(p);
+        createProcess(queueName);
     }
 
     @SuppressWarnings({"CallToPrintStackTrace", "UseSpecificCatch"})
@@ -166,17 +179,17 @@ public class ProcessManager {
         }
     }
 
-    private void moveFileAcync(File srcFile, PlotterParams p) {
+    private void moveFileAcync(File srcFile, String queueName, boolean delayMove) {
         movingProcessesCount.incrementAndGet();
-        CompletableFuture.runAsync(() -> moveFile(srcFile, p));
+        CompletableFuture.runAsync(() -> moveFile(srcFile, queueName, delayMove));
     }
 
     @SuppressWarnings({"SleepWhileInLoop", "CallToPrintStackTrace", "SleepWhileHoldingLock"})
-    private void moveFile(File srcFile, PlotterParams p) {
+    private void moveFile(File srcFile, String queueName, boolean delayMove) {
         try {
-            if (!DELAY_MOVE.isZero()) {
-                log(p.getName() + " ProcessManager: Delaying move for " + DELAY_MOVE + ". File: " + srcFile.getAbsolutePath());
-                Thread.sleep(DELAY_MOVE.toMillis());
+            if (delayMove && !moveDelay.isZero()) {
+                log(queueName + " ProcessManager: Delaying move for " + moveDelay + ". File: " + srcFile.getAbsolutePath());
+                Thread.sleep(moveDelay.toMillis());
             }
             File dest;
             synchronized (inUseMoveDest) {
@@ -193,7 +206,7 @@ public class ProcessManager {
             }
             long s = System.currentTimeMillis();
             try {
-                log(p.getName() + " ProcessManager: Move START. File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
+                log(queueName + " ProcessManager: Move START. File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
                 new FileMover(srcFile, dest, 0, new byte[COPY_BUFFER_SIZE], new AtomicBoolean(), new AtomicBoolean()).run();
             } catch (IOException ex) {
                 ex.printStackTrace();
@@ -201,7 +214,7 @@ public class ProcessManager {
                 synchronized (inUseMoveDest) {
                     inUseMoveDest.remove(dest);
                 }
-                log(p.getName() + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
+                log(queueName + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
             }
         } catch (InterruptedException ex) {
             ex.printStackTrace();
@@ -211,35 +224,75 @@ public class ProcessManager {
     }
     private final Set<File> inUseMoveDest = new HashSet<>();
 
-    private Collection<PlotterParams> readConfig(File file) throws IOException {
-        Collection<PlotterParams> result = new ArrayList<>();
+    private void readConfig(File file) {
+        Collection<PlotterParams> ppFromConfig = new ArrayList<>();
         try (BufferedReader in = new BufferedReader(new FileReader(file))) {
-            for (String s = in.readLine(); s != null; s = in.readLine()) {
-                if (s.contains(" -> ")) {
-                    String a[] = s.split("\t");
-                    if (a.length >= 2) {
-                        String name = a[0];
-                        String b[] = a[1].split(" -> ");
-                        if (b.length == 2) {
-                            String tmpDrive = b[0];
-                            String tmp2Drive = b[1];
-                            log("ProcessManager: readConfig: " + name + "\t " + tmpDrive + " -> " + tmp2Drive);
-                            result.add(new PlotterParams(name, tmpDrive, tmp2Drive));
+            synchronized (plotterParamsMap) {
+                for (String s = in.readLine(); s != null; s = in.readLine()) {
+                    if (s.startsWith("#")) {
+                        //skip
+                    } else if (s.contains(" -> ")) {
+                        String a[] = s.split("\t");
+                        if (a.length >= 2) {
+                            String name = a[0];
+                            String b[] = a[1].split(" -> ");
+                            if (b.length == 2) {
+                                String tmpDrive = b[0];
+                                String tmp2Drive = b[1];
+                                PlotterParams pp = new PlotterParams(name, tmpDrive, tmp2Drive);
+                                PlotterParams ppOld = plotterParamsMap.get(name);
+                                if (ppOld == null || !ppOld.equals(pp)) {
+                                    plotterParamsMap.put(name, pp);
+                                    log("ProcessManager: readConfig: " + name + "\t " + tmpDrive + " -> " + tmp2Drive);
+                                }
+                                ppFromConfig.add(pp);
+                            }
+                        }
+                    } else if (s.startsWith("memory=")) {
+                        int memory2 = Integer.parseInt(s.split("=")[1].trim());
+                        if (memory2 != memory) {
+                            memory = memory2;
+                            log("ProcessManager: readConfig: memory=" + memory);
+                        }
+                    } else if (s.startsWith("threads=")) {
+                        int nThreads2 = Integer.parseInt(s.split("=")[1].trim());
+                        if (nThreads2 != nThreads) {
+                            nThreads = nThreads2;
+                            log("ProcessManager: eadConfig: nThreads=" + nThreads);
+                        }
+                    } else if (s.startsWith("delay=")) {
+                        Duration delayStartQueue2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
+                        if (!delayStartQueue2.equals(delayStartQueue)) {
+                            delayStartQueue = delayStartQueue2;
+                            log("ProcessManager: readConfig: delayStartQueue=" + delayStartQueue);
+                        }
+                    } else if (s.startsWith("move-delay=")) {
+                        Duration moveDelay2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
+                        if (!moveDelay2.equals(moveDelay)) {
+                            moveDelay = moveDelay2;
+                            log("ProcessManager: readConfig: moveDelay=" + moveDelay);
                         }
                     }
-                } else if (s.startsWith("memory=")) {
-                    memory = Integer.parseInt(s.split("=")[1].trim());
-                    log("ProcessManager: readConfig: memory=" + memory);
-                } else if (s.startsWith("threads=")) {
-                    nThreads = Integer.parseInt(s.split("=")[1].trim());
-                    log("ProcessManager: eadConfig: nThreads=" + nThreads);
-                } else if (s.startsWith("delay=")) {
-                    delayStartQueue = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
-                    log("ProcessManager: readConfig: delayStartQueue=" + delayStartQueue);
+                }
+                for (Iterator<Entry<String, PlotterParams>> i = plotterParamsMap.entrySet().iterator(); i.hasNext();) {
+                    Entry<String, PlotterParams> e = i.next();
+                    Optional<PlotterParams> opp = ppFromConfig.stream().filter(pp -> pp.getName().equals((e.getKey()))).findFirst();
+                    if (opp.isPresent()) {
+                        if (!opp.get().equals(e.getValue())) {
+                            log("ProcessManager: readConfig: Detected Queue config change: " + e.getKey()
+                                    + ". Old: " + e.getValue().getTmpDrive() + " -> " + e.getValue().getTmp2Drive()
+                                    + ". New: " + opp.get().getTmpDrive() + " -> " + opp.get().getTmp2Drive() + ".");
+                            e.setValue(opp.get());
+                        }
+                    } else {
+                        log("ProcessManager: readConfig: Detected Queue config removal: " + e.getKey());
+                        i.remove();
+                    }
                 }
             }
+        } catch (IOException ex) {
+            log("ProcessManager: readConfig: ERROR: " + ex.getClass() + " " + ex.getMessage());
         }
-        return result;
     }
 
     private Collection<File> getAvailableDestinations() {
@@ -301,5 +354,37 @@ public class ProcessManager {
             return tmp2Drive;
         }
 
+        @Override
+        public int hashCode() {
+            int hash = 7;
+            hash = 41 * hash + Objects.hashCode(this.name);
+            hash = 41 * hash + Objects.hashCode(this.tmpDrive);
+            hash = 41 * hash + Objects.hashCode(this.tmp2Drive);
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (obj == null) {
+                return false;
+            }
+            if (getClass() != obj.getClass()) {
+                return false;
+            }
+            final PlotterParams other = (PlotterParams) obj;
+            if (!Objects.equals(this.name, other.name)) {
+                return false;
+            }
+            if (!Objects.equals(this.tmpDrive, other.tmpDrive)) {
+                return false;
+            }
+            if (!Objects.equals(this.tmp2Drive, other.tmp2Drive)) {
+                return false;
+            }
+            return true;
+        }
     }
 }

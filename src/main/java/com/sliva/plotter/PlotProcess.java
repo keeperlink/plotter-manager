@@ -16,6 +16,7 @@ import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.WRITE;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
@@ -158,18 +159,26 @@ public class PlotProcess {
     }
 
     private void onOutput(String s) {
-        if (s == null) {
-            log(getName() + " PlotProcess.onOutput: Process finished. name=\"" + getName() + "\"");
-            finished = true;
-            onComplete.accept(this);
-        } else {
-            processStdOutLine(s);
+        try {
+            if (s == null) {
+                log(getName() + " PlotProcess.onOutput: Process finished. name=\"" + getName() + "\"");
+                finished = true;
+                CompletableFuture.runAsync(() -> onComplete.accept(this));
+            } else {
+                processStdOutLine(s);
+            }
+        } catch (Throwable t) {
+            System.out.println("ERROR: " + t.getClass() + ": " + t.getMessage());
         }
     }
 
     private void onError(String s) {
-        if (s != null) {
-            log(getName() + " PlotProcess.onError: StdErr: " + s);
+        try {
+            if (s != null) {
+                log(getName() + " PlotProcess.onError: StdErr: " + s);
+            }
+        } catch (Throwable t) {
+            System.out.println("ERROR: " + t.getClass() + ": " + t.getMessage());
         }
     }
 
@@ -201,7 +210,7 @@ public class PlotProcess {
         if (logFile == null) {
             if (getId() != null) {
                 logFile = new File(logDir, getId() + ".log");
-                log(getName() + " PlotProcess. Using log file: " + logFile.getAbsolutePath());
+                //log(getName() + " PlotProcess. Using log file: " + logFile.getAbsolutePath());
                 writeLog(outputBuffer.toString());
                 outputBuffer.setLength(0);
             }
@@ -209,7 +218,7 @@ public class PlotProcess {
             resultFileName = new File(s.split("\"")[3].replaceAll("\\\\\\\\", "\\\\")).getName();
             log(getName() + " PlotProcess: Result file name: " + getResultFileName());
             File finalLogFile = new File(logDir, getResultFileName() + ".log");
-            log(getName() + " PlotProcess: Renaming log file: " + logFile.getAbsolutePath() + " ==> " + finalLogFile.getAbsolutePath());
+            //log(getName() + " PlotProcess: Renaming log file: " + logFile.getAbsolutePath() + " ==> " + finalLogFile.getAbsolutePath());
             logFile.renameTo(finalLogFile);
             logFile = finalLogFile;
         }
