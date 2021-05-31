@@ -7,7 +7,6 @@ import static com.sliva.plotter.IOUtils.fixVolumePathForWindows;
 import static com.sliva.plotter.LoggerUtil.getTimestampString;
 import static com.sliva.plotter.LoggerUtil.log;
 import java.io.File;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import static java.nio.file.StandardOpenOption.APPEND;
@@ -54,16 +53,17 @@ public class ProcessManager {
     public void run() throws InterruptedException {
         log("ProcessManager: Using plotting log file: " + PLOTTING_LOG_FILE.getAbsolutePath());
         log("ProcessManager STARTED: Watching for stop file: " + STOP_FILE.getAbsolutePath());
-        Set<File> refDestSet = new HashSet<>(getAvailableDestinations());
+        Set<File> cachedDestSet = new HashSet<>(getAvailableDestinations());
         ConfigReader.readConfig(configFile, config);
         log("ProcessManager: Available destinations: " + getAvailableDestinations());
         config.getQueueNames().forEach(this::createProcessQueue);
         Thread.sleep(2000);
         while (!runningProcessQueues.isEmpty() || asyncMover.getMovingProcessesCount() != 0) {
             Thread.sleep(5000);
-            if (ConfigReader.readConfig(configFile, config) || checkChangedAndUpdate(getAvailableDestinations(), refDestSet)) {
+            if (ConfigReader.readConfig(configFile, config) || checkChangedAndUpdate(getAvailableDestinations(), cachedDestSet)) {
                 //restart non-running queues on any change in either config file or destination volumes availability
-                config.getQueueNames().stream().filter(name -> !isQueueRunning(name)).forEach(this::createProcessQueue);
+                config.getQueueNames().stream().filter(q -> !isQueueRunning(q))
+                        .forEach(this::createProcessQueue);
             }
         }
         log("ProcessManager FINISHED");
@@ -72,6 +72,13 @@ public class ProcessManager {
     private void createProcessQueue(String queueName) {
         int queueId = queueCount.getAndIncrement();
         log(queueName + " ProcessManager: Creating new process queue \"" + queueName + "\" #" + queueId);
+        synchronized (runningProcessQueues) {
+            if (runningProcessQueues.contains(queueName)) {
+                log(queueName + " ProcessManager: Queue already exists - exiting");
+                return;
+            }
+            runningProcessQueues.add(queueName);
+        }
         CompletableFuture.runAsync(() -> {
             Duration delay = Duration.ofMillis(config.getDelayStartQueue().toMillis() * queueId);
             if (delay.toMillis() > 0) {
@@ -83,12 +90,7 @@ public class ProcessManager {
                     return;
                 }
             }
-            synchronized (runningProcessQueues) {
-                if (!runningProcessQueues.contains(queueName)) {
-                    runningProcessQueues.add(queueName);
-                    createProcess(queueName);
-                }
-            }
+            createProcess(queueName);
         });
     }
 
@@ -104,6 +106,7 @@ public class ProcessManager {
         }
     }
 
+    @SuppressWarnings("UseSpecificCatch")
     private void createProcess(String queueName) {
         if (STOP_FILE.exists()) {
             log(queueName + " ProcessManager: STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Exiting queue \"" + queueName + "\"");
@@ -143,7 +146,7 @@ public class ProcessManager {
             }
             log(p.getName() + " ProcessManager: Starting process \"" + p.getName() + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
             new PlotProcess(p.getName(), tmpPath, tmp2Path, isTmp2Dest, config.getMemory(), config.getnThreads(), pp -> onCompleteProcess(pp, queueName)).startProcess();
-        } catch (IOException ex) {
+        } catch (Exception ex) {
             log(p.getName() + " ProcessManager: ERROR: " + ex.getClass() + ": " + ex.getMessage());
             destroyProcessQueue(queueName);
         }
@@ -188,12 +191,20 @@ public class ProcessManager {
         return result;
     }
 
-    private boolean checkChangedAndUpdate(Collection<File> newData, Set<File> oldData) {
+    /**
+     * Check if newData is differ from oldData. If so, update oldData with
+     * newData and return true.
+     *
+     * @param newData New Data Collection
+     * @param oldData Old Data Set
+     * @return true if data changed
+     */
+    private static boolean checkChangedAndUpdate(Collection<File> newData, Set<File> oldData) {
         AtomicBoolean changed = new AtomicBoolean(false);
         synchronized (oldData) {
             newData.forEach(f -> {
                 if (!oldData.contains(f)) {
-                    log("ProcessManager: Detected new destination volume: " + f.getAbsolutePath());
+                    log("ProcessManager: Adding destination volume: " + f.getAbsolutePath());
                     oldData.add(f);
                     changed.set(true);
                 }
