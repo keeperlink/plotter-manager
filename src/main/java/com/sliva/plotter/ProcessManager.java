@@ -119,13 +119,20 @@ public class ProcessManager {
             File tmp2Path;
             if (isTmp2Dest) {
                 synchronized (inUseDirectDest) {
-                    tmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f)).findAny().get();
+                    Optional<File> otmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f)).findAny();
+                    if (!otmp2Path.isPresent()) {
+                        log(p.getName() + " ProcessManager: No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
+                        destroyProcessQueue(p);
+                        return;
+                    }
+                    tmp2Path = otmp2Path.get();
+                    log(p.getName() + " ProcessManager: Reserving volume for direct destination: " + tmp2Path);
                     inUseDirectDest.add(tmp2Path);
                 }
             } else {
                 tmp2Path = new File(fixVolumePathForWindows(p.getTmp2Drive()), TMP_PATH);
             }
-            log(p.getName() + " ProcessManager: Starting process \"" + p.getName() + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest);
+            log(p.getName() + " ProcessManager: Starting process \"" + p.getName() + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
             new PlotProcess(p.getName(), tmpPath, tmp2Path, isTmp2Dest, memory, nThreads, pp -> onCompleteProcess(pp, p)).startProcess();
         } catch (IOException ex) {
             ex.printStackTrace();
