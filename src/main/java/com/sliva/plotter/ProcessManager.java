@@ -49,8 +49,8 @@ public class ProcessManager {
     private static final int COPY_BUFFER_SIZE = 10 * MB;
 
     private final File configFile;
-    private int memory = 4000;
-    private int nThreads = 8;
+    private int memory = 3500;
+    private int nThreads = 4;
     private Duration delayStartQueue = Duration.ofMinutes(60);
     private Duration moveDelay = Duration.ofMinutes(30);
     private final Map<String, PlotterParams> plotterParamsMap = new HashMap<>();
@@ -67,13 +67,17 @@ public class ProcessManager {
     public void run() throws InterruptedException {
         log("ProcessManager: Using plotting log file: " + PLOTTING_LOG_FILE.getAbsolutePath());
         log("ProcessManager STARTED: Watching for stop file: " + STOP_FILE.getAbsolutePath());
+        Set<File> refDestSet = new HashSet<>(getAvailableDestinations());
         readConfig(configFile);
         log("ProcessManager: Available destinations: " + getAvailableDestinations());
-        plotterParamsMap.forEach((name, pp) -> createProcessQueue(name));
+        getQueueNames().forEach(this::createProcessQueue);
         Thread.sleep(2000);
         while (!runningProcessQueues.isEmpty() || movingProcessesCount.get() != 0) {
-            Thread.sleep(10000);
-            getAvailableDestinations();
+            Thread.sleep(5000);
+            if (readConfig(configFile) || checkChangedAndUpdate(getAvailableDestinations(), refDestSet)) {
+                //restart non-running queues on any change in either config file or destination volumes availability
+                getQueueNames().stream().filter(name -> !isQueueRunning(name)).forEach(this::createProcessQueue);
+            }
         }
         log("ProcessManager FINISHED");
     }
@@ -105,10 +109,15 @@ public class ProcessManager {
         }
     }
 
-    @SuppressWarnings("CallToPrintStackTrace")
+    private boolean isQueueRunning(String queueName) {
+        synchronized (runningProcessQueues) {
+            return runningProcessQueues.contains(queueName);
+        }
+    }
+
     private void createProcess(String queueName) {
         if (STOP_FILE.exists()) {
-            log(queueName + " ProcessManager: STOP file detected. Exiting queue \"" + queueName + "\"");
+            log(queueName + " ProcessManager: STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
             return;
         }
@@ -117,8 +126,7 @@ public class ProcessManager {
             destroyProcessQueue(queueName);
             return;
         }
-        readConfig(configFile);
-        PlotterParams p = plotterParamsMap.get(queueName);
+        PlotterParams p = getPlotterParams(queueName);
         if (p == null) {
             log(queueName + " ProcessManager: Queue removed from config. Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
@@ -147,7 +155,8 @@ public class ProcessManager {
             log(p.getName() + " ProcessManager: Starting process \"" + p.getName() + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
             new PlotProcess(p.getName(), tmpPath, tmp2Path, isTmp2Dest, memory, nThreads, pp -> onCompleteProcess(pp, queueName)).startProcess();
         } catch (IOException ex) {
-            ex.printStackTrace();
+            log(p.getName() + " ProcessManager: ERROR: " + ex.getClass() + ": " + ex.getMessage());
+            destroyProcessQueue(queueName);
         }
     }
 
@@ -184,7 +193,7 @@ public class ProcessManager {
         CompletableFuture.runAsync(() -> moveFile(srcFile, queueName, delayMove));
     }
 
-    @SuppressWarnings({"SleepWhileInLoop", "CallToPrintStackTrace", "SleepWhileHoldingLock"})
+    @SuppressWarnings({"SleepWhileInLoop", "SleepWhileHoldingLock"})
     private void moveFile(File srcFile, String queueName, boolean delayMove) {
         try {
             if (delayMove && !moveDelay.isZero()) {
@@ -200,7 +209,7 @@ public class ProcessManager {
                         dest = odest.get();
                         break;
                     }
-                    Thread.sleep(100);
+                    Thread.sleep(1000);
                 }
                 inUseMoveDest.add(dest);
             }
@@ -209,7 +218,7 @@ public class ProcessManager {
                 log(queueName + " ProcessManager: Move START. File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
                 new FileMover(srcFile, dest, 0, new byte[COPY_BUFFER_SIZE], new AtomicBoolean(), new AtomicBoolean()).run();
             } catch (IOException ex) {
-                ex.printStackTrace();
+                log(queueName + " ProcessManager: moveFile ERROR: " + ex.getClass() + ": " + ex.getMessage());
             } finally {
                 synchronized (inUseMoveDest) {
                     inUseMoveDest.remove(dest);
@@ -217,14 +226,33 @@ public class ProcessManager {
                 log(queueName + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
             }
         } catch (InterruptedException ex) {
-            ex.printStackTrace();
+            log(queueName + " ProcessManager: moveFile interrupted: " + ex.getMessage());
         } finally {
             movingProcessesCount.decrementAndGet();
         }
     }
     private final Set<File> inUseMoveDest = new HashSet<>();
 
-    private void readConfig(File file) {
+    private Collection<String> getQueueNames() {
+        synchronized (plotterParamsMap) {
+            return new HashSet<>(plotterParamsMap.keySet());
+        }
+    }
+
+    private PlotterParams getPlotterParams(String queueName) {
+        synchronized (plotterParamsMap) {
+            return plotterParamsMap.get(queueName);
+        }
+    }
+
+    /**
+     * Read configuration file.
+     *
+     * @param file Config file
+     * @return true if config has been changed since last read
+     */
+    private boolean readConfig(File file) {
+        boolean changed = false;
         Collection<PlotterParams> ppFromConfig = new ArrayList<>();
         try (BufferedReader in = new BufferedReader(new FileReader(file))) {
             synchronized (plotterParamsMap) {
@@ -243,6 +271,7 @@ public class ProcessManager {
                                 PlotterParams ppOld = plotterParamsMap.get(name);
                                 if (ppOld == null || !ppOld.equals(pp)) {
                                     plotterParamsMap.put(name, pp);
+                                    changed = true;
                                     log("ProcessManager: readConfig: " + name + "\t " + tmpDrive + " -> " + tmp2Drive);
                                 }
                                 ppFromConfig.add(pp);
@@ -252,24 +281,28 @@ public class ProcessManager {
                         int memory2 = Integer.parseInt(s.split("=")[1].trim());
                         if (memory2 != memory) {
                             memory = memory2;
+                            changed = true;
                             log("ProcessManager: readConfig: memory=" + memory);
                         }
                     } else if (s.startsWith("threads=")) {
                         int nThreads2 = Integer.parseInt(s.split("=")[1].trim());
                         if (nThreads2 != nThreads) {
                             nThreads = nThreads2;
+                            changed = true;
                             log("ProcessManager: eadConfig: nThreads=" + nThreads);
                         }
                     } else if (s.startsWith("delay=")) {
                         Duration delayStartQueue2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
                         if (!delayStartQueue2.equals(delayStartQueue)) {
                             delayStartQueue = delayStartQueue2;
+                            changed = true;
                             log("ProcessManager: readConfig: delayStartQueue=" + delayStartQueue);
                         }
                     } else if (s.startsWith("move-delay=")) {
                         Duration moveDelay2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
                         if (!moveDelay2.equals(moveDelay)) {
                             moveDelay = moveDelay2;
+                            changed = true;
                             log("ProcessManager: readConfig: moveDelay=" + moveDelay);
                         }
                     }
@@ -283,16 +316,19 @@ public class ProcessManager {
                                     + ". Old: " + e.getValue().getTmpDrive() + " -> " + e.getValue().getTmp2Drive()
                                     + ". New: " + opp.get().getTmpDrive() + " -> " + opp.get().getTmp2Drive() + ".");
                             e.setValue(opp.get());
+                            changed = true;
                         }
                     } else {
                         log("ProcessManager: readConfig: Detected Queue config removal: " + e.getKey());
                         i.remove();
+                        changed = true;
                     }
                 }
             }
         } catch (IOException ex) {
             log("ProcessManager: readConfig: ERROR: " + ex.getClass() + " " + ex.getMessage());
         }
+        return changed;
     }
 
     private Collection<File> getAvailableDestinations() {
@@ -301,28 +337,30 @@ public class ProcessManager {
                 .map(f -> new File(f, DESTINATION_PATH))
                 .filter(f -> f.exists() && f.isDirectory() && !new File(f, NO_WRITE_FILENAME).exists() && getFreeSpace(f) >= MIN_SPACE)
                 .collect(Collectors.toList());
-        updateCachedDestinations(result);
         return result;
     }
 
-    private void updateCachedDestinations(Collection<File> result) {
-        synchronized (cachedDestinations) {
-            result.forEach(f -> {
-                if (!cachedDestinations.contains(f)) {
+    private boolean checkChangedAndUpdate(Collection<File> newData, Set<File> oldData) {
+        AtomicBoolean changed = new AtomicBoolean(false);
+        synchronized (oldData) {
+            newData.forEach(f -> {
+                if (!oldData.contains(f)) {
                     log("ProcessManager: Detected new destination volume: " + f.getAbsolutePath());
-                    cachedDestinations.add(f);
+                    oldData.add(f);
+                    changed.set(true);
                 }
             });
-            for (Iterator<File> i = cachedDestinations.iterator(); i.hasNext();) {
+            for (Iterator<File> i = oldData.iterator(); i.hasNext();) {
                 File f = i.next();
-                if (!result.contains(f)) {
+                if (!newData.contains(f)) {
                     log("ProcessManager: Removing destination volume: " + f.getAbsolutePath());
                     i.remove();
+                    changed.set(true);
                 }
             }
         }
+        return changed.get();
     }
-    private final Set<File> cachedDestinations = new HashSet<>();
 
     private long getFreeSpace(File f) {
         synchronized (inUseDirectDest) {
