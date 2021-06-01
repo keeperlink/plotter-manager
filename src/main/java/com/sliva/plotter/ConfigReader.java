@@ -66,7 +66,7 @@ public final class ConfigReader {
                         if (nThreads2 != config.getnThreads()) {
                             config.setnThreads(nThreads2);
                             changed = true;
-                            log("ProcessManager: eadConfig: nThreads=" + nThreads2);
+                            log("ProcessManager: readConfig: nThreads=" + nThreads2);
                         }
                     } else if (s.startsWith("delay=")) {
                         Duration delayStartQueue2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));

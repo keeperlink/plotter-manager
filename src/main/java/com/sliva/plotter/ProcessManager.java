@@ -131,7 +131,7 @@ public class ProcessManager {
             File tmp2Path;
             if (isTmp2Dest) {
                 synchronized (inUseDirectDest) {
-                    Optional<File> otmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f)).findAny();
+                    Optional<File> otmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f) && !IOUtils.isNetworkDriveCached(f)).findAny();
                     if (!otmp2Path.isPresent()) {
                         log(p.getName() + " ProcessManager: No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
                         destroyProcessQueue(queueName);
@@ -183,7 +183,9 @@ public class ProcessManager {
     }
 
     private Collection<File> getAvailableDestinations() {
-        Collection<File> result = Stream.of(File.listRoots())
+        File[] listRoots = File.listRoots();
+        IOUtils.updateNetworkDriveCache(listRoots);
+        Collection<File> result = Stream.of(listRoots)
                 .filter(f -> !new File(f, NO_WRITE_FILENAME).exists())
                 .map(f -> new File(f, DESTINATION_PATH))
                 .filter(f -> f.exists() && f.isDirectory() && !new File(f, NO_WRITE_FILENAME).exists() && getFreeSpace(f) >= MIN_SPACE)
@@ -204,7 +206,7 @@ public class ProcessManager {
         synchronized (oldData) {
             newData.forEach(f -> {
                 if (!oldData.contains(f)) {
-                    log("ProcessManager: Adding destination volume: " + f.getAbsolutePath());
+                    log("ProcessManager: Adding destination volume: " + f.getAbsolutePath() + (IOUtils.isNetworkDriveCached(f) ? " (Network shared drive)" : ""));
                     oldData.add(f);
                     changed.set(true);
                 }
