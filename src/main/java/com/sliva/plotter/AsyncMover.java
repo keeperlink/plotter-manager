@@ -36,7 +36,7 @@ public class AsyncMover {
         CompletableFuture.runAsync(() -> moveFile(srcFile, queueName, availableDestinations, delayMove));
     }
 
-    @SuppressWarnings({"SleepWhileInLoop", "SleepWhileHoldingLock"})
+    @SuppressWarnings({"SleepWhileInLoop"})
     private void moveFile(File srcFile, String queueName, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
         try {
             if (delayMove.isZero()) {
@@ -44,17 +44,20 @@ public class AsyncMover {
                 Thread.sleep(delayMove.toMillis());
             }
             File dest;
-            synchronized (inUseMoveDest) {
-                for (;;) {
+            for (int i = 0;; i++) {
+                synchronized (inUseMoveDest) {
                     //find destination with enough space that is not currently used by another move process and prefer one that is not used as direct destination (temp2=dest)
                     Optional<File> odest = availableDestinations.get().stream().filter(f -> !inUseMoveDest.contains(f)).findFirst();
                     if (odest.isPresent()) {
                         dest = odest.get();
+                        inUseMoveDest.add(dest);
                         break;
                     }
-                    Thread.sleep(1000);
                 }
-                inUseMoveDest.add(dest);
+                if (i % 300 == 0) {
+                    log(queueName + " ProcessManager: No any destination volume available at the moment. Waiting...");
+                }
+                Thread.sleep(1000);
             }
             long s = System.currentTimeMillis();
             try {

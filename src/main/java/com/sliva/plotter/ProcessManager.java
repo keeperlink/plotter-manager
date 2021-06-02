@@ -132,7 +132,7 @@ public class ProcessManager {
             File tmp2Path;
             if (isTmp2Dest) {
                 synchronized (inUseDirectDest) {
-                    Optional<File> otmp2Path = getAvailableDestinations().stream().filter(f -> !inUseDirectDest.contains(f) && !IOUtils.isNetworkDriveCached(f)).findAny();
+                    Optional<File> otmp2Path = getDirectDestination();
                     if (!otmp2Path.isPresent()) {
                         log(queueName + " ProcessManager: No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
                         destroyProcessQueue(queueName);
@@ -168,7 +168,7 @@ public class ProcessManager {
                 if (pp.getResultFileName() != null) {
                     boolean delayMove = pp.getTmp2Path().equals(pp.getTmpPath());
                     asyncMover.moveFileAcync(new File(pp.getTmp2Path(), pp.getResultFileName()), queueName,
-                            () -> getAvailableDestinations().stream().sorted(Comparator.comparing(inUseDirectDest::contains)).collect(Collectors.toList()),
+                            this::getMoveDestinationsList,
                             delayMove ? config.getMoveDelay() : Duration.ZERO);
                 } else {
                     log(queueName + " ProcessManager: onCompleteProcess: No result file");
@@ -178,6 +178,35 @@ public class ProcessManager {
         } catch (Exception ex) {
             log(queueName + " ProcessManager: onCompleteProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
             destroyProcessQueue(queueName);
+        }
+    }
+
+    /**
+     * Pick direct destination volume that is not already used, not a network
+     * shared volume, preferring one with the lowest fill ratio.
+     *
+     * @return Optional of destination File object
+     */
+    private Optional<File> getDirectDestination() {
+        synchronized (inUseDirectDest) {
+            return getAvailableDestinations().stream()
+                    .filter(f -> !inUseDirectDest.contains(f) && !IOUtils.isNetworkDriveCached(f))
+                    .sorted(Comparator.comparing(this::getFillRatio))
+                    .findFirst();
+        }
+    }
+
+    /**
+     * Get list of available destinations. List first destination that are not
+     * used by direct plotting and ones with the lowest fill ratio.
+     *
+     * @return Collection of destination File objects
+     */
+    private Collection<File> getMoveDestinationsList() {
+        synchronized (inUseDirectDest) {
+            return getAvailableDestinations().stream()
+                    .sorted(Comparator.comparing((File f) -> inUseDirectDest.contains(f)).thenComparingDouble(this::getFillRatio))
+                    .collect(Collectors.toList());
         }
     }
 
@@ -216,5 +245,10 @@ public class ProcessManager {
         synchronized (inUseDirectDest) {
             return f.getUsableSpace() - (inUseDirectDest.contains(f) ? MIN_SPACE : 0);
         }
+    }
+
+    private double getFillRatio(File f) {
+        double total = f.getTotalSpace();
+        return total <= 0 ? 0.5 : ((total - getFreeSpace(f)) / total);
     }
 }
