@@ -159,14 +159,20 @@ public class ProcessManager {
             log(queueName + " ProcessManager: Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
             logPlottingStat(pp);
             if (pp.isTmp2Dest()) {
+                //plotted directly on destination volume
                 synchronized (inUseDirectDest) {
                     inUseDirectDest.remove(pp.getTmp2Path());
                 }
             } else {
-                boolean delayMove = pp.getTmp2Path().equals(pp.getTmpPath());
-                asyncMover.moveFileAcync(new File(pp.getTmp2Path(), pp.getResultFileName()), queueName,
-                        () -> getAvailableDestinations().stream().sorted(Comparator.comparing(inUseDirectDest::contains)).collect(Collectors.toList()),
-                        delayMove ? config.getMoveDelay() : Duration.ZERO);
+                //plotted to temp. Initiate move from tmp2 to destination volume
+                if (pp.getResultFileName() != null) {
+                    boolean delayMove = pp.getTmp2Path().equals(pp.getTmpPath());
+                    asyncMover.moveFileAcync(new File(pp.getTmp2Path(), pp.getResultFileName()), queueName,
+                            () -> getAvailableDestinations().stream().sorted(Comparator.comparing(inUseDirectDest::contains)).collect(Collectors.toList()),
+                            delayMove ? config.getMoveDelay() : Duration.ZERO);
+                } else {
+                    log(queueName + " ProcessManager: onCompleteProcess: No result file");
+                }
             }
             createProcess(queueName);
         } catch (Exception ex) {
