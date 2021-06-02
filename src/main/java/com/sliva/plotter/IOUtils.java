@@ -8,12 +8,15 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
 /**
@@ -126,4 +129,35 @@ public final class IOUtils {
         }
     }
     private static final Map<File, Boolean> isNetworkDriveCache = new HashMap<>();
+
+    /**
+     * Check if newData is differ from oldData.If so, update oldData with
+     * newData and return true.
+     *
+     * @param newData New Data Collection
+     * @param oldData Old Data Set
+     * @param onChange called with changed root and isNew flag parameters
+     * @return true if data changed
+     */
+    public static boolean checkChangedAndUpdate(Collection<File> newData, Set<File> oldData, BiConsumer<File, Boolean> onChange) {
+        AtomicBoolean changed = new AtomicBoolean(false);
+        synchronized (oldData) {
+            newData.forEach(f -> {
+                if (!oldData.contains(f)) {
+                    oldData.add(f);
+                    onChange.accept(f, true);
+                    changed.set(true);
+                }
+            });
+            for (Iterator<File> i = oldData.iterator(); i.hasNext();) {
+                File f = i.next();
+                if (!newData.contains(f)) {
+                    i.remove();
+                    onChange.accept(f, false);
+                    changed.set(true);
+                }
+            }
+        }
+        return changed.get();
+    }
 }
