@@ -6,7 +6,6 @@ package com.sliva.plotter;
 import static com.sliva.plotter.AsyncUtil.asyncReadLines;
 import static com.sliva.plotter.IOUtils.deleteTempFiles;
 import static com.sliva.plotter.LoggerUtil.getTimestampString;
-import static com.sliva.plotter.LoggerUtil.log;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -161,7 +160,7 @@ public class PlotProcess {
     private void onOutput(String s) {
         try {
             if (s == null) {
-                log(getName() + " PlotProcess.onOutput: Process finished. name=\"" + getName() + "\"");
+                log("onOutput: Process finished. name=\"" + getName() + "\"");
                 finished = true;
                 CompletableFuture.runAsync(() -> onComplete.accept(this));
             } else {
@@ -175,7 +174,7 @@ public class PlotProcess {
     private void onError(String s) {
         try {
             if (s != null) {
-                log(getName() + " PlotProcess.onError: StdErr: " + s);
+                log("onError: StdErr: " + s);
             }
         } catch (Throwable t) {
             System.out.println("ERROR: " + t.getClass() + ": " + t.getMessage());
@@ -186,7 +185,7 @@ public class PlotProcess {
         String logLine = getTimestampString() + ": " + s;
         if (s.startsWith("ID: ")) {
             id = s.substring(4);
-            log(getName() + " PlotProcess: ID=" + getId());
+            log("ID=" + getId());
         } else if (s.startsWith(STARTING_PHASE)) {
             phase = Integer.parseInt(s.substring(STARTING_PHASE.length(), STARTING_PHASE.length() + 1));
             subPhase = 0;
@@ -216,7 +215,7 @@ public class PlotProcess {
             }
         } else if (s.startsWith("Renamed final file ")) {
             resultFileName = new File(s.split("\"")[3].replaceAll("\\\\\\\\", "\\\\")).getName();
-            log(getName() + " PlotProcess: Result file name: " + getResultFileName());
+            log("Result file name: " + getResultFileName());
             File finalLogFile = new File(logDir, getResultFileName() + ".log");
             //log(getName() + " PlotProcess: Renaming log file: " + logFile.getAbsolutePath() + " ==> " + finalLogFile.getAbsolutePath());
             logFile.renameTo(finalLogFile);
@@ -236,6 +235,10 @@ public class PlotProcess {
         } catch (Exception ex) {
             ex.printStackTrace();
         }
+    }
+
+    private void log(String s) {
+        LoggerUtil.log(getName() + " PlotProcess: " + s);
     }
 
     private static File getChiaExecutable() throws IOException {

@@ -3,7 +3,6 @@
  */
 package com.sliva.plotter;
 
-import static com.sliva.plotter.LoggerUtil.log;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -49,7 +48,7 @@ public final class ConfigReader {
                                 if (ppOld == null || !ppOld.equals(pp)) {
                                     config.getPlotterParamsMap().put(name, pp);
                                     changed = true;
-                                    log("ProcessManager: readConfig: " + name + "\t " + tmpDrive + " -> " + tmp2Drive);
+                                    log("Queue: " + name + "\t " + tmpDrive + " -> " + tmp2Drive);
                                 }
                                 ppFromConfig.add(pp);
                             }
@@ -59,28 +58,28 @@ public final class ConfigReader {
                         if (memory2 != config.getMemory()) {
                             config.setMemory(memory2);
                             changed = true;
-                            log("ProcessManager: readConfig: memory=" + memory2);
+                            log("memory=" + memory2);
                         }
                     } else if (s.startsWith("threads=")) {
                         int nThreads2 = Integer.parseInt(s.split("=")[1].trim());
                         if (nThreads2 != config.getnThreads()) {
                             config.setnThreads(nThreads2);
                             changed = true;
-                            log("ProcessManager: readConfig: nThreads=" + nThreads2);
+                            log("nThreads=" + nThreads2);
                         }
                     } else if (s.startsWith("delay=")) {
                         Duration delayStartQueue2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
                         if (!delayStartQueue2.equals(config.getDelayStartQueue())) {
                             config.setDelayStartQueue(delayStartQueue2);
                             changed = true;
-                            log("ProcessManager: readConfig: delayStartQueue=" + delayStartQueue2);
+                            log("delayStartQueue=" + delayStartQueue2);
                         }
                     } else if (s.startsWith("move-delay=")) {
                         Duration moveDelay2 = Duration.ofMinutes(Integer.parseInt(s.split("=")[1].trim()));
                         if (!moveDelay2.equals(config.getMoveDelay())) {
                             config.setMoveDelay(moveDelay2);
                             changed = true;
-                            log("ProcessManager: readConfig: moveDelay=" + moveDelay2);
+                            log("moveDelay=" + moveDelay2);
                         }
                     }
                 }
@@ -89,22 +88,26 @@ public final class ConfigReader {
                     Optional<PlotterParams> opp = ppFromConfig.stream().filter(pp -> pp.getName().equals((e.getKey()))).findFirst();
                     if (opp.isPresent()) {
                         if (!opp.get().equals(e.getValue())) {
-                            log("ProcessManager: readConfig: Detected Queue config change: " + e.getKey()
+                            log("Detected Queue config change: " + e.getKey()
                                     + ". Old: " + e.getValue().getTmpDrive() + " -> " + e.getValue().getTmp2Drive()
                                     + ". New: " + opp.get().getTmpDrive() + " -> " + opp.get().getTmp2Drive() + ".");
                             e.setValue(opp.get());
                             changed = true;
                         }
                     } else {
-                        log("ProcessManager: readConfig: Detected Queue config removal: " + e.getKey());
+                        log("Detected Queue config removal: " + e.getKey());
                         i.remove();
                         changed = true;
                     }
                 }
             }
         } catch (IOException ex) {
-            log("ProcessManager: readConfig: ERROR: " + ex.getClass() + " " + ex.getMessage());
+            log("ERROR: " + ex.getClass() + " " + ex.getMessage());
         }
         return changed;
+    }
+
+    private static void log(String s) {
+        LoggerUtil.log("ConfigReader: " + s);
     }
 }

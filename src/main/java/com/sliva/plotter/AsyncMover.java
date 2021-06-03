@@ -36,7 +36,6 @@ public class AsyncMover {
         CompletableFuture.runAsync(() -> moveFile(srcFile, queueName, availableDestinations, delayMove));
     }
 
-    @SuppressWarnings({"SleepWhileInLoop"})
     private void moveFile(File srcFile, String queueName, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
         try {
             if (delayMove.isZero()) {
@@ -44,8 +43,8 @@ public class AsyncMover {
                 Thread.sleep(delayMove.toMillis());
             }
             File dest;
-            for (int i = 0;; i++) {
-                synchronized (inUseMoveDest) {
+            synchronized (inUseMoveDest) {
+                for (;;) {
                     //find destination with enough space that is not currently used by another move process and prefer one that is not used as direct destination (temp2=dest)
                     Optional<File> odest = availableDestinations.get().stream().filter(f -> !inUseMoveDest.contains(f)).findFirst();
                     if (odest.isPresent()) {
@@ -53,11 +52,9 @@ public class AsyncMover {
                         inUseMoveDest.add(dest);
                         break;
                     }
-                }
-                if (i % 300 == 0) {
                     log(queueName + " ProcessManager: No any destination volume available at the moment. Waiting...");
+                    inUseMoveDest.wait(Duration.ofMinutes(5).toMillis());
                 }
-                Thread.sleep(1000);
             }
             long s = System.currentTimeMillis();
             try {
@@ -68,6 +65,7 @@ public class AsyncMover {
             } finally {
                 synchronized (inUseMoveDest) {
                     inUseMoveDest.remove(dest);
+                    inUseMoveDest.notifyAll();
                 }
                 log(queueName + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
             }
@@ -77,5 +75,4 @@ public class AsyncMover {
             movingProcessesCount.decrementAndGet();
         }
     }
-
 }

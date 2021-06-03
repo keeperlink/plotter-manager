@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class FileMover {
 
-    private static final long PRINT_PROGRESS_STEP_PERCENT = 5;
+    private static final long PRINT_PROGRESS_STEP_PERCENT = 10;
     private static final int SELECTIVE_CHECK_SECTORS = 200;
     private static final int SELECTIVE_CHECK_SECTOR_SIZE = 4 * KB;
 

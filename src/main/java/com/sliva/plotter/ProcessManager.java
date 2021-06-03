@@ -7,7 +7,6 @@ import static com.sliva.plotter.IOUtils.checkChangedAndUpdate;
 import static com.sliva.plotter.IOUtils.fixVolumePathForWindows;
 import static com.sliva.plotter.IOUtils.isNetworkDriveCached;
 import static com.sliva.plotter.LoggerUtil.getTimestampString;
-import static com.sliva.plotter.LoggerUtil.log;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -31,6 +30,7 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
+    private static final String VERSION = "1.0.7";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
@@ -52,11 +52,10 @@ public class ProcessManager {
 
     @SuppressWarnings("SleepWhileInLoop")
     public void run() throws InterruptedException {
-        log("ProcessManager: Using plotting log file: " + PLOTTING_LOG_FILE.getAbsolutePath());
-        log("ProcessManager STARTED: Watching for stop file: " + STOP_FILE.getAbsolutePath());
+        log(null, "STARTED");
         Set<File> cachedDestSet = new HashSet<>(getAvailableDestinations());
         ConfigReader.readConfig(configFile, config);
-        log("ProcessManager: Available destinations: " + getAvailableDestinations());
+        log(null, "Available destinations: " + getAvailableDestinations());
         config.getQueueNames().forEach(this::createProcessQueue);
         while (!runningProcessQueues.isEmpty() || asyncMover.getMovingProcessesCount() != 0) {
             Thread.sleep(CHECK_PERIOD.toMillis());
@@ -66,15 +65,15 @@ public class ProcessManager {
                         .forEach(this::createProcessQueue);
             }
         }
-        log("ProcessManager FINISHED");
+        log(null, "FINISHED");
     }
 
     private void createProcessQueue(String queueName) {
         int queueId = queueCount.getAndIncrement();
-        log(queueName + " ProcessManager: Creating new process queue \"" + queueName + "\" #" + queueId);
+        log(queueName, "Creating new process queue \"" + queueName + "\" #" + queueId);
         synchronized (runningProcessQueues) {
             if (runningProcessQueues.contains(queueName)) {
-                log(queueName + " ProcessManager: Queue already exists - exiting");
+                log(queueName, "Queue already exists - exiting");
                 return;
             }
             runningProcessQueues.add(queueName);
@@ -82,11 +81,11 @@ public class ProcessManager {
         CompletableFuture.runAsync(() -> {
             Duration delay = Duration.ofMillis(config.getDelayStartQueue().toMillis() * queueId);
             if (delay.toMillis() > 0) {
-                log(queueName + " ProcessManager: Delaying queue \"" + queueName + "\" #" + queueId + " for " + delay);
+                log(queueName, "Delaying queue \"" + queueName + "\" #" + queueId + " for " + delay);
                 try {
                     Thread.sleep(delay.toMillis());
                 } catch (InterruptedException ex) {
-                    log(queueName + " ProcessManager: Interrupted during delay sleep queue \"" + queueName + "\" #" + queueId);
+                    log(queueName, "Interrupted during delay sleep queue \"" + queueName + "\" #" + queueId);
                     destroyProcessQueue(queueName);
                     return;
                 }
@@ -110,22 +109,22 @@ public class ProcessManager {
     @SuppressWarnings("UseSpecificCatch")
     private void createProcess(String queueName) {
         if (STOP_FILE.exists()) {
-            log(queueName + " ProcessManager: STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Exiting queue \"" + queueName + "\"");
+            log(queueName, "STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
             return;
         }
         if (getAvailableDestinations().isEmpty()) {
-            log(queueName + " ProcessManager: No destination space left. Exiting queue \"" + queueName + "\"");
+            log(queueName, "No destination space left. Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
             return;
         }
         PlotterParams p = config.getPlotterParams(queueName);
         if (p == null) {
-            log(queueName + " ProcessManager: Queue removed from config. Exiting queue \"" + queueName + "\"");
+            log(queueName, "Queue removed from config. Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
             return;
         }
-        log(queueName + " ProcessManager: Creating process: " + queueName + "\t" + p.getTmpDrive() + " -> " + p.getTmp2Drive());
+        log(queueName, "Creating process: " + queueName + "\t" + p.getTmpDrive() + " -> " + p.getTmp2Drive());
         try {
             boolean isTmp2Dest = "dest".equals(p.getTmp2Drive());
             File tmpPath = new File(fixVolumePathForWindows(p.getTmpDrive()), TMP_PATH);
@@ -134,21 +133,21 @@ public class ProcessManager {
                 synchronized (inUseDirectDest) {
                     Optional<File> otmp2Path = getDirectDestination();
                     if (!otmp2Path.isPresent()) {
-                        log(queueName + " ProcessManager: No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
+                        log(queueName, "No available volumes for direct destination. All available destination volumes: " + getAvailableDestinations() + ", In-use by other processes destination volumes: " + inUseDirectDest + ". Exiting queue \"" + p.getName() + "\"");
                         destroyProcessQueue(queueName);
                         return;
                     }
                     tmp2Path = otmp2Path.get();
-                    log(queueName + " ProcessManager: Reserving volume for direct destination: " + tmp2Path);
+                    log(queueName, "Reserving volume for direct destination: " + tmp2Path);
                     inUseDirectDest.add(tmp2Path);
                 }
             } else {
                 tmp2Path = new File(fixVolumePathForWindows(p.getTmp2Drive()), TMP_PATH);
             }
-            log(queueName + " ProcessManager: Starting process \"" + queueName + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
+            log(queueName, "Starting process \"" + queueName + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
             new PlotProcess(queueName, tmpPath, tmp2Path, isTmp2Dest, config.getMemory(), config.getnThreads(), pp -> onCompleteProcess(pp, queueName)).startProcess();
         } catch (Exception ex) {
-            log(queueName + " ProcessManager: createProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
+            log(queueName, "createProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
             destroyProcessQueue(queueName);
         }
     }
@@ -156,7 +155,7 @@ public class ProcessManager {
     private void onCompleteProcess(PlotProcess pp, String queueName) {
         try {
             long runtime = System.currentTimeMillis() - pp.getCreateTimestamp();
-            log(queueName + " ProcessManager: Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
+            log(queueName, "Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
             logPlottingStat(pp);
             if (pp.isTmp2Dest()) {
                 //plotted directly on destination volume
@@ -171,12 +170,12 @@ public class ProcessManager {
                             this::getMoveDestinationsList,
                             delayMove ? config.getMoveDelay() : Duration.ZERO);
                 } else {
-                    log(queueName + " ProcessManager: onCompleteProcess: No result file");
+                    log(queueName, "onCompleteProcess: No result file");
                 }
             }
             createProcess(queueName);
         } catch (Exception ex) {
-            log(queueName + " ProcessManager: onCompleteProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
+            log(queueName, "onCompleteProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
             destroyProcessQueue(queueName);
         }
     }
@@ -224,7 +223,7 @@ public class ProcessManager {
     }
 
     private void onRootChanged(File root, boolean isNew) {
-        log("ProcessManager: " + (isNew ? "Adding" : "Removing") + " destination volume: "
+        log(null, (isNew ? "Adding" : "Removing") + " destination volume: "
                 + root.getAbsolutePath()
                 + (isNew && isNetworkDriveCached(root) ? " (Network shared drive)" : "")
         );
@@ -250,5 +249,9 @@ public class ProcessManager {
     private double getFillRatio(File f) {
         double total = f.getTotalSpace();
         return total <= 0 ? 0.5 : ((total - getFreeSpace(f)) / total);
+    }
+
+    private void log(String queue, String s) {
+        LoggerUtil.log((queue != null ? queue + " " : "") + "ProcessManager(" + VERSION + "): " + s);
     }
 }
