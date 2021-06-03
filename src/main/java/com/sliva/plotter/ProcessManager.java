@@ -20,7 +20,6 @@ import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -30,7 +29,7 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
-    private static final String VERSION = "1.0.8";
+    private static final String VERSION = "1.0.9";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
@@ -44,7 +43,6 @@ public class ProcessManager {
     private final AsyncMover asyncMover = new AsyncMover();
     private final Set<File> inUseDirectDest = new HashSet<>();
     private final Set<String> runningProcessQueues = new HashSet<>();
-    private final AtomicInteger queueCount = new AtomicInteger();
 
     public ProcessManager(File configFile) {
         this.configFile = configFile;
@@ -66,36 +64,62 @@ public class ProcessManager {
             if (ConfigReader.readConfig(configFile, config) || checkChangedAndUpdate(getAvailableDestinations(), cachedDestSet, this::onRootChanged)) {
                 //restart non-running queues on any change in either config file or destination volumes availability
                 config.getQueueNames().stream().filter(q -> !isQueueRunning(q))
-                        .forEach(this::createProcessQueue);
+                        .forEach(this::recreateProcessQueue);
             }
         }
         log(null, "FINISHED");
     }
 
     private void createProcessQueue(String queueName) {
-        int queueId = queueCount.getAndIncrement();
-        log(queueName, "Creating new process queue \"" + queueName + "\" #" + queueId);
+        createProcessQueue(queueName, true);
+    }
+
+    private void recreateProcessQueue(String queueName) {
+        createProcessQueue(queueName, false);
+    }
+
+    private void createProcessQueue(String queueName, boolean doDelay) {
+        if (STOP_FILE.exists()) {
+            return;
+        }
+        int numOldRunningQueues;
         synchronized (runningProcessQueues) {
             if (runningProcessQueues.contains(queueName)) {
                 log(queueName, "Queue already exists - exiting");
                 return;
             }
+            numOldRunningQueues = runningProcessQueues.size();
             runningProcessQueues.add(queueName);
         }
+        log(queueName, "Creating new process queue");
         CompletableFuture.runAsync(() -> {
-            Duration delay = Duration.ofMillis(config.getDelayStartQueue().toMillis() * queueId);
-            if (delay.toMillis() > 0) {
-                log(queueName, "Delaying queue \"" + queueName + "\" #" + queueId + " for " + delay);
-                try {
-                    Thread.sleep(delay.toMillis());
-                } catch (InterruptedException ex) {
-                    log(queueName, "Interrupted during delay sleep queue \"" + queueName + "\" #" + queueId);
-                    destroyProcessQueue(queueName);
-                    return;
-                }
+            Duration delay = config.getDelayStartQueue().multipliedBy(doDelay ? numOldRunningQueues : 0);
+            if (delayStartQueue(queueName, delay)) {
+                createProcess(queueName);
+            } else {
+                destroyProcessQueue(queueName);
             }
-            createProcess(queueName);
         });
+    }
+
+    @SuppressWarnings("SleepWhileInLoop")
+    private boolean delayStartQueue(String queueName, Duration delay) {
+        if (delay.toMillis() > 0) {
+            log(queueName, "Delaying queue for " + delay);
+            try {
+                for (long timeout = System.currentTimeMillis() + delay.toMillis(); System.currentTimeMillis() < timeout;) {
+                    if (STOP_FILE.exists()) {
+                        log(queueName, "STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Interrupting queue delay loop");
+                        return false;
+                    }
+                    Thread.sleep(5000);
+                }
+            } catch (InterruptedException ex) {
+                log(queueName, "Interrupted during delay sleep queue");
+                return false;
+            }
+        }
+        return true;
     }
 
     private void destroyProcessQueue(String queueName) {
