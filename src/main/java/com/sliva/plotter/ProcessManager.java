@@ -53,6 +53,10 @@ public class ProcessManager {
     @SuppressWarnings("SleepWhileInLoop")
     public void run() throws InterruptedException {
         log(null, "STARTED");
+        if (STOP_FILE.exists()) {
+            //rename stop-file left from previous execution stop request
+            STOP_FILE.renameTo(new File(STOP_FILE.getAbsolutePath() + "_N"));
+        }
         Set<File> cachedDestSet = new HashSet<>(getAvailableDestinations());
         ConfigReader.readConfig(configFile, config);
         log(null, "Available destinations: " + getAvailableDestinations());
