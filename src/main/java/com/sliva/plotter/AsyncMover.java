@@ -14,7 +14,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
@@ -24,22 +23,39 @@ import java.util.function.Supplier;
 public class AsyncMover {
 
     private static final int COPY_BUFFER_SIZE = 10 * MB;
-    private final AtomicInteger movingProcessesCount = new AtomicInteger();
+    private final Set<MovingProcess> movingProcesses = new HashSet<>();
     private final Set<File> inUseMoveDest = new HashSet<>();
 
-    public int getMovingProcessesCount() {
-        return movingProcessesCount.get();
+    public int countMovingProcesses() {
+        synchronized (movingProcesses) {
+            return movingProcesses.size();
+        }
+    }
+
+    public int countMovingProcessesNoDestination() {
+        synchronized (movingProcesses) {
+            return (int) movingProcesses.stream().filter(mp -> !mp.getDestinationPath().isPresent()).count();
+        }
+    }
+
+    public Optional<MovingProcess> getMovingProcessByDestination(File destinationPath) {
+        synchronized (movingProcesses) {
+            return movingProcesses.stream().filter(mp -> mp.getDestinationPath().map(dp -> dp.equals(destinationPath)).orElse(false)).findAny();
+        }
     }
 
     public void moveFileAcync(File srcFile, String queueName, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
-        movingProcessesCount.incrementAndGet();
-        CompletableFuture.runAsync(() -> moveFile(srcFile, queueName, availableDestinations, delayMove));
+        MovingProcess mp = new MovingProcess(queueName, srcFile);
+        synchronized (movingProcesses) {
+            movingProcesses.add(mp);
+        }
+        CompletableFuture.runAsync(() -> moveFile(mp, availableDestinations, delayMove));
     }
 
-    private void moveFile(File srcFile, String queueName, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
+    private void moveFile(MovingProcess mp, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
         try {
             if (delayMove.toMillis() > 0) {
-                log(queueName + " ProcessManager: Delaying move for " + delayMove + ". File: " + srcFile.getAbsolutePath());
+                log(mp.getQueueName() + " ProcessManager: Delaying move for " + delayMove + ". File: " + mp.getSrcFile().getAbsolutePath());
                 Thread.sleep(delayMove.toMillis());
             }
             File dest;
@@ -52,27 +68,75 @@ public class AsyncMover {
                         inUseMoveDest.add(dest);
                         break;
                     }
-                    log(queueName + " ProcessManager: No any destination volume available at the moment. Waiting...");
+                    log(mp.getQueueName() + " ProcessManager: No any destination volume available at the moment. Waiting...");
                     inUseMoveDest.wait(Duration.ofMinutes(5).toMillis());
                 }
+                mp.setDestinationPath(Optional.of(dest));
             }
             long s = System.currentTimeMillis();
             try {
-                log(queueName + " ProcessManager: Move START. File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
-                new FileMover(srcFile, dest, 0, new byte[COPY_BUFFER_SIZE], new AtomicBoolean(), new AtomicBoolean()).run();
+                log(mp.getQueueName() + " ProcessManager: Move START. File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
+                new FileMover(mp.getSrcFile(), dest, 0, new byte[COPY_BUFFER_SIZE], new AtomicBoolean(), new AtomicBoolean(), mp::setMovedBytes).run();
             } catch (IOException ex) {
-                log(queueName + " ProcessManager: moveFile ERROR: " + ex.getClass() + ": " + ex.getMessage());
+                log(mp.getQueueName() + " ProcessManager: moveFile ERROR: " + ex.getClass() + ": " + ex.getMessage());
             } finally {
                 synchronized (inUseMoveDest) {
                     inUseMoveDest.remove(dest);
                     inUseMoveDest.notifyAll();
                 }
-                log(queueName + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + srcFile.getAbsolutePath() + " to " + dest.getAbsolutePath());
+                log(mp.getQueueName() + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
             }
         } catch (InterruptedException ex) {
-            log(queueName + " ProcessManager: moveFile interrupted: " + ex.getMessage());
+            log(mp.getQueueName() + " ProcessManager: moveFile interrupted: " + ex.getMessage());
         } finally {
-            movingProcessesCount.decrementAndGet();
+            synchronized (movingProcesses) {
+                movingProcesses.remove(mp);
+            }
         }
     }
+
+    public static class MovingProcess {
+
+        private final String queueName;
+        private final File srcFile;
+        private Optional<File> destinationPath = Optional.empty();
+        private final long fileSize;
+        private long movedBytes;
+
+        public MovingProcess(String queueName, File srcFile) {
+            this.queueName = queueName;
+            this.srcFile = srcFile;
+            this.fileSize = srcFile.length();
+        }
+
+        public String getQueueName() {
+            return queueName;
+        }
+
+        public File getSrcFile() {
+            return srcFile;
+        }
+
+        public Optional<File> getDestinationPath() {
+            return destinationPath;
+        }
+
+        public long getFileSize() {
+            return fileSize;
+        }
+
+        public long getMovedBytes() {
+            return movedBytes;
+        }
+
+        private void setDestinationPath(Optional<File> destinationPath) {
+            this.destinationPath = destinationPath;
+        }
+
+        private void setMovedBytes(long movedBytes) {
+            this.movedBytes = movedBytes;
+        }
+
+    }
+
 }

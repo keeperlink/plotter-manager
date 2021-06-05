@@ -16,7 +16,9 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -29,7 +31,7 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
-    private static final String VERSION = "1.0.10";
+    private static final String VERSION = "1.0.11";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
@@ -42,7 +44,7 @@ public class ProcessManager {
     private final Config config = new Config();
     private final AsyncMover asyncMover = new AsyncMover();
     private final Set<File> inUseDirectDest = new HashSet<>();
-    private final Set<String> runningProcessQueues = new HashSet<>();
+    private final Map<String, Optional<PlotProcess>> runningProcessQueues = new HashMap<>();
 
     public ProcessManager(File configFile) {
         this.configFile = configFile;
@@ -59,7 +61,7 @@ public class ProcessManager {
         ConfigReader.readConfig(configFile, config);
         log(null, "Available destinations: " + getAvailableDestinations());
         config.getQueueNames().forEach(this::createProcessQueue);
-        while (!runningProcessQueues.isEmpty() || asyncMover.getMovingProcessesCount() != 0) {
+        while (!runningProcessQueues.isEmpty() || asyncMover.countMovingProcesses() != 0) {
             Thread.sleep(CHECK_PERIOD.toMillis());
             if (ConfigReader.readConfig(configFile, config) || checkChangedAndUpdate(getAvailableDestinations(), cachedDestSet, this::onRootChanged)) {
                 //restart non-running queues on any change in either config file or destination volumes availability
@@ -84,12 +86,12 @@ public class ProcessManager {
         }
         int numOldRunningQueues;
         synchronized (runningProcessQueues) {
-            if (runningProcessQueues.contains(queueName)) {
+            if (runningProcessQueues.containsKey(queueName)) {
                 log(queueName, "Queue already exists - exiting");
                 return;
             }
             numOldRunningQueues = runningProcessQueues.size();
-            runningProcessQueues.add(queueName);
+            runningProcessQueues.put(queueName, Optional.empty());
         }
         log(queueName, "Creating new process queue");
         CompletableFuture.runAsync(() -> {
@@ -111,6 +113,9 @@ public class ProcessManager {
                     if (STOP_FILE.exists()) {
                         log(queueName, "STOP file detected (" + STOP_FILE.getAbsolutePath() + "). Interrupting queue delay loop");
                         return false;
+                    } else if (!hasDestinationSpace()) {
+                        log(queueName, "No destination space left. Exiting queue \"" + queueName + "\"");
+                        return false;
                     }
                     Thread.sleep(5000);
                 }
@@ -130,7 +135,7 @@ public class ProcessManager {
 
     private boolean isQueueRunning(String queueName) {
         synchronized (runningProcessQueues) {
-            return runningProcessQueues.contains(queueName);
+            return runningProcessQueues.containsKey(queueName);
         }
     }
 
@@ -141,7 +146,7 @@ public class ProcessManager {
             destroyProcessQueue(queueName);
             return;
         }
-        if (getAvailableDestinations().isEmpty()) {
+        if (!hasDestinationSpace()) {
             log(queueName, "No destination space left. Exiting queue \"" + queueName + "\"");
             destroyProcessQueue(queueName);
             return;
@@ -173,7 +178,11 @@ public class ProcessManager {
                 tmp2Path = new File(fixVolumePathForWindows(p.getTmp2Drive()), TMP_PATH);
             }
             log(queueName, "Starting process \"" + queueName + "\" " + p.getTmpDrive() + " -> " + p.getTmp2Drive() + ", isTmp2Dest=" + isTmp2Dest + ", tmpPath=" + tmpPath + ", tmp2Path=" + tmp2Path);
-            new PlotProcess(queueName, tmpPath, tmp2Path, isTmp2Dest, config.getMemory(), config.getnThreads(), pp -> onCompleteProcess(pp, queueName)).startProcess();
+            PlotProcess plotProcess = new PlotProcess(queueName, tmpPath, tmp2Path, isTmp2Dest, config.getMemory(), config.getnThreads(), pp -> onCompleteProcess(pp, queueName));
+            synchronized (runningProcessQueues) {
+                runningProcessQueues.put(queueName, Optional.of(plotProcess));
+            }
+            plotProcess.startProcess();
         } catch (Exception ex) {
             log(queueName, "createProcess: ERROR: " + ex.getClass() + ": " + ex.getMessage());
             destroyProcessQueue(queueName);
@@ -185,6 +194,10 @@ public class ProcessManager {
             long runtime = System.currentTimeMillis() - pp.getCreateTimestamp();
             log(queueName, "Process complete: \"" + pp.getName() + "\". Runtime: " + Duration.ofMillis(runtime));
             logPlottingStat(pp);
+            synchronized (runningProcessQueues) {
+                //process finished, but queue is still active
+                runningProcessQueues.put(queueName, Optional.empty());
+            }
             if (pp.isTmp2Dest()) {
                 //plotted directly on destination volume
                 synchronized (inUseDirectDest) {
@@ -268,10 +281,22 @@ public class ProcessManager {
         return result;
     }
 
+    private boolean hasDestinationSpace() {
+        return getAvailableDestinations().stream().map(f -> getFreeSpace(f) / MIN_SPACE).reduce(0L, Long::sum) > asyncMover.countMovingProcessesNoDestination();
+    }
+
     private long getFreeSpace(File f) {
         synchronized (inUseDirectDest) {
-            return f.getUsableSpace() - (inUseDirectDest.contains(f) ? MIN_SPACE : 0);
+            return f.getUsableSpace() - getSpaceReservedByDirectDestProcess(f) - getSpaceReservedByMovingProcess(f);
         }
+    }
+
+    private long getSpaceReservedByDirectDestProcess(File f) {
+        return inUseDirectDest.contains(f) ? MIN_SPACE : 0;
+    }
+
+    private long getSpaceReservedByMovingProcess(File f) {
+        return asyncMover.getMovingProcessByDestination(f).map(mp -> mp.getFileSize() - mp.getMovedBytes()).orElse(0L);
     }
 
     private double getFillRatio(File f) {

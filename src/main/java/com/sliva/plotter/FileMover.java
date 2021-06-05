@@ -15,6 +15,7 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  *
@@ -32,14 +33,16 @@ public class FileMover {
     private final byte[] buffer;
     private final AtomicBoolean paused;
     private final AtomicBoolean interrupted;
+    private final Consumer<Long> onMoveProgress;
 
-    public FileMover(File sourceFile, File destinationDir, int copyThrottle, byte[] buffer, AtomicBoolean paused, AtomicBoolean interrupted) {
+    public FileMover(File sourceFile, File destinationDir, int copyThrottle, byte[] buffer, AtomicBoolean paused, AtomicBoolean interrupted, Consumer<Long> onMoveProgress) {
         this.sourceFile = sourceFile;
         this.destinationDir = destinationDir;
         this.copyThrottle = copyThrottle;
         this.buffer = buffer;
         this.paused = paused;
         this.interrupted = interrupted;
+        this.onMoveProgress = onMoveProgress;
     }
 
     public void run() throws IOException, InterruptedException {
@@ -95,6 +98,9 @@ public class FileMover {
                 }
                 os.write(buffer, 0, n);
                 copiedBytes += n;
+                if (onMoveProgress != null) {
+                    onMoveProgress.accept(copiedBytes);
+                }
                 long percent = copiedBytes * 100 / fileSize;
                 if (percent >= nextProgressToPrintPercent) {
                     log("Copying file " + sourceFile + ": " + nextProgressToPrintPercent + "%");
