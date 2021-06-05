@@ -38,7 +38,7 @@ public class AsyncMover {
 
     private void moveFile(File srcFile, String queueName, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
         try {
-            if (delayMove.isZero()) {
+            if (delayMove.toMillis() > 0) {
                 log(queueName + " ProcessManager: Delaying move for " + delayMove + ". File: " + srcFile.getAbsolutePath());
                 Thread.sleep(delayMove.toMillis());
             }

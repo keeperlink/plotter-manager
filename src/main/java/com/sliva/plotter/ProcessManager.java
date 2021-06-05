@@ -29,7 +29,7 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
-    private static final String VERSION = "1.0.9";
+    private static final String VERSION = "1.0.10";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
