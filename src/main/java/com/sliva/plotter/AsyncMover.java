@@ -55,7 +55,7 @@ public class AsyncMover {
     private void moveFile(MovingProcess mp, Supplier<Collection<File>> availableDestinations, Duration delayMove) {
         try {
             if (delayMove.toMillis() > 0) {
-                log(mp.getQueueName() + " ProcessManager: Delaying move for " + delayMove + ". File: " + mp.getSrcFile().getAbsolutePath());
+                log(mp.getQueueName() + " AsyncMover: Delaying move for " + delayMove + ". File: " + mp.getSrcFile().getAbsolutePath());
                 Thread.sleep(delayMove.toMillis());
             }
             File dest;
@@ -68,26 +68,26 @@ public class AsyncMover {
                         inUseMoveDest.add(dest);
                         break;
                     }
-                    log(mp.getQueueName() + " ProcessManager: No any destination volume available at the moment. Waiting...");
+                    log(mp.getQueueName() + " AsyncMover: No any destination volume available at the moment. Waiting...");
                     inUseMoveDest.wait(Duration.ofMinutes(5).toMillis());
                 }
                 mp.setDestinationPath(Optional.of(dest));
             }
             long s = System.currentTimeMillis();
             try {
-                log(mp.getQueueName() + " ProcessManager: Move START. File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
+                log(mp.getQueueName() + " AsyncMover: Move START. File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
                 new FileMover(mp.getSrcFile(), dest, 0, new byte[COPY_BUFFER_SIZE], new AtomicBoolean(), new AtomicBoolean(), mp::setMovedBytes).run();
             } catch (IOException ex) {
-                log(mp.getQueueName() + " ProcessManager: moveFile ERROR: " + ex.getClass() + ": " + ex.getMessage());
+                log(mp.getQueueName() + " AsyncMover: moveFile ERROR: " + ex.getClass() + ": " + ex.getMessage());
             } finally {
                 synchronized (inUseMoveDest) {
                     inUseMoveDest.remove(dest);
                     inUseMoveDest.notifyAll();
                 }
-                log(mp.getQueueName() + " ProcessManager: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
+                log(mp.getQueueName() + " AsyncMover: Move FINISHED. Runtime: " + Duration.ofMillis(System.currentTimeMillis() - s) + ". File " + mp.getSrcFile().getAbsolutePath() + " to " + dest.getAbsolutePath());
             }
         } catch (InterruptedException ex) {
-            log(mp.getQueueName() + " ProcessManager: moveFile interrupted: " + ex.getMessage());
+            log(mp.getQueueName() + " AsyncMover: moveFile interrupted: " + ex.getMessage());
         } finally {
             synchronized (movingProcesses) {
                 movingProcesses.remove(mp);

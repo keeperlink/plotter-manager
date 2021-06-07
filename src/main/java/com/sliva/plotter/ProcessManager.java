@@ -31,7 +31,7 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
-    private static final String VERSION = "1.0.11";
+    private static final String VERSION = "1.0.12";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
@@ -117,7 +117,7 @@ public class ProcessManager {
                         log(queueName, "No destination space left. Exiting queue \"" + queueName + "\"");
                         return false;
                     }
-                    Thread.sleep(5000);
+                    Thread.sleep(Duration.ofSeconds(10).toMillis());
                 }
             } catch (InterruptedException ex) {
                 log(queueName, "Interrupted during delay sleep queue");
