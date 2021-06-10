@@ -31,12 +31,13 @@ import java.util.stream.Stream;
  */
 public class ProcessManager {
 
-    private static final String VERSION = "1.0.12";
+    private static final String VERSION = "1.0.13";
     private static final long MIN_SPACE = 109_000_000_000L;
     private static final File STOP_FILE = new File("plotting-stop");
     private static final File PLOTTING_LOG_FILE = new File("plotting.log");
     private static final String DESTINATION_PATH = "Chia.plot";
     private static final String NO_WRITE_FILENAME = "no-write";
+    private static final String NO_DIRECT_FILENAME = "no-direct";
     private static final String TMP_PATH = "Chia.tmp";
     private static final Duration CHECK_PERIOD = Duration.ofSeconds(5);
 
@@ -230,7 +231,7 @@ public class ProcessManager {
     private Optional<File> getDirectDestination() {
         synchronized (inUseDirectDest) {
             return getAvailableDestinations().stream()
-                    .filter(f -> !inUseDirectDest.contains(f) && !IOUtils.isNetworkDriveCached(f))
+                    .filter(f -> !inUseDirectDest.contains(f) && !IOUtils.isNetworkDriveCached(f) && !new File(f, NO_DIRECT_FILENAME).exists() && (f.getParentFile() == null || !new File(f.getParentFile(), NO_DIRECT_FILENAME).exists()))
                     .sorted(Comparator.comparing(this::getFillRatio))
                     .findFirst();
         }
